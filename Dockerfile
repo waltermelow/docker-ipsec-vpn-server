@@ -1,13 +1,18 @@
-#
-# Copyright (C) 2021-2026 Lin Song <linsongui@gmail.com>
-#
-# This work is licensed under the Creative Commons Attribution-ShareAlike 3.0
-# Unported License: http://creativecommons.org/licenses/by-sa/3.0/
-#
-# Attribution required: please include my name in any derivative and let me
-# know how you have improved it!
-
 FROM alpine:3.23
+
+# ############################################################################################ #
+# Use example:
+#     docker run --rm --network none -e VPN_DNS_NAME=name-server.com -e VPN_CLIENT_NAME=new-client-name-1 -v ./ikev2-vpn-data:/etc/ipsec.d ipsec-vpn-server:20260923
+#     docker run --rm --network none -e VPN_DNS_NAME=name-server.com -e VPN_CLIENT_NAME=new-client-name-1 -v ./ikev2-vpn-data:/etc/ipsec.d ipsec-vpn-server:20260923 --auto
+#     docker run --rm --network none -v ./ikev2-vpn-data:/etc/ipsec.d ipsec-vpn-server:20260923 --addclient "new-client-name-2"
+#     docker run --rm --network none -v ./ikev2-vpn-data:/etc/ipsec.d ipsec-vpn-server:20260923 --listclients
+#                                                                                              #
+# Source Repo 1: https://github.com/hwdsl2/setup-ipsec-vpn                                     #
+# Source Repo 2: https://github.com/hwdsl2/docker-ipsec-vpn-server                             #
+#                                                                                              #
+# Source file 1: https://github.com/hwdsl2/setup-ipsec-vpn/blob/master/extras/ikev2setup.sh    #
+# Source file 2: https://github.com/hwdsl2/docker-ipsec-vpn-server/blob/master/Dockerfile      #
+# ############################################################################################ #
 
 ENV SWAN_VER=5.4
 WORKDIR /opt/src
@@ -40,15 +45,31 @@ RUN set -x \
          bison flex gcc make libc-dev bsd-compat-headers linux-pam-dev \
          nss-dev libcap-ng-dev libevent-dev curl-dev nspr-dev
 
-RUN wget -t 3 -T 30 -nv -O /opt/src/ikev2.sh https://github.com/hwdsl2/setup-ipsec-vpn/raw/ae78dcdc77546a7856dff783a2cbf5305ac56817/extras/ikev2setup.sh \
-    && chmod +x /opt/src/ikev2.sh \
-    && ln -s /opt/src/ikev2.sh /usr/bin
-
+# DML Antes: RUN wget -t 3 -T 30 -nv -O /opt/src/ikev2.sh https://github.com/hwdsl2/setup-ipsec-vpn/raw/ae78dcdc77546a7856dff783a2cbf5305ac56817/extras/ikev2setup.sh
+# DML Añadido 'ikev2setup.sh' desde: https://github.com/hwdsl2/setup-ipsec-vpn/blob/master/extras/ikev2setup.sh
+COPY ./ikev2setup.sh /opt/src/ikev2.sh
+RUN chmod +x /opt/src/ikev2.sh \
+    && ln -s /opt/src/ikev2.sh /usr/bin/ikev2.sh
+# run.sh: es necesario porque se llama desde ikev2.sh
 COPY ./run.sh /opt/src/run.sh
 COPY ./LICENSE.md /opt/src/LICENSE.md
-RUN chmod 755 /opt/src/run.sh
+
+# DML Corregir el tipo de fichero de CRLF (Windows) a LF (Unix/Linux)
+RUN sed -i 's/\r$//' /opt/src/ikev2.sh /opt/src/run.sh
+
+
+# run.sh levanta el servidor IPSec StrongSwan
+# DML: Comentamos porque no queremos que levante tunel: COPY ./run.sh /opt/src/run.sh
+# DML: Comentamos porque no queremos que levante tunel: RUN chmod 755 /opt/src/run.sh
+
 EXPOSE 500/udp 4500/udp
-CMD ["/opt/src/run.sh"]
+
+# run.sh levanta el servidor IPSec StrongSwan
+# DML: Comentamos porque NO queremos que levante tunel: CMD ["/opt/src/run.sh"]
+# CMD ["/bin/sh", "-c", "/opt/src/ikev2.sh --auto"]
+# ENTRYPOINT ["/opt/src/ikev2.sh"]
+ENTRYPOINT ["/usr/bin/ikev2.sh"]
+CMD ["--auto"]
 
 ARG BUILD_DATE
 ARG VERSION

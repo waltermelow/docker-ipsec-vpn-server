@@ -1100,6 +1100,8 @@ create_android_profile() {
   [ -z "$server_addr" ] && get_server_address
   p12_base64_oneline=$(base64 -w 52 "$export_dir$client_name.p12" | sed 's/$/\\n/' | tr -d '\n')
   [ -z "$p12_base64_oneline" ] && exiterr "Could not encode .p12 file."
+  ca_base64_oneline=$(certutil -L -d "$CERT_DB" -n "$CA_NAME" -a | grep -v CERTIFICATE | tr -d '\r\n')
+  [ -z "$ca_base64_oneline" ] && exiterr "Could not encode $CA_NAME certificate."
   uuid2=$(uuidgen)
   [ -z "$uuid2" ] && exiterr "Could not generate UUID value."
   sswan_file="$export_dir$client_name.sswan"
@@ -1110,13 +1112,24 @@ cat > "$sswan_file" <<EOF
   "type": "ikev2-cert",
   "remote": {
     "addr": "$server_addr"
+    "id": "O=IKEv2 VPN,CN=$client_name",
+    "cert": "$ca_base64_oneline",
+    "certreq": "false",
+    "revocation": {
+      "crl": "false",
+      "ocsp": "false",
+      "strict": "false"
+    }
   },
   "local": {
     "p12": "$p12_base64_oneline",
     "rsa-pss": "true"
   },
-  "ike-proposal": "aes256-sha256-modp2048",
-  "esp-proposal": "aes128gcm16"
+  "split-tunneling": {
+    "subnets": ""
+  },
+  "ike-proposal": "aes256-sha256-ecp256",
+  "esp-proposal": "aes256-sha256"
 }
 EOF
   if [ "$export_to_home_dir" = 1 ]; then
@@ -1149,6 +1162,10 @@ y
 N
 ANSWERS
   sleep 1
+  # DML Ini: Exporta a fichero CA_xxx.cer
+  certutil -L -d "$CERT_DB" -n "$CA_NAME" -a -o "$export_dir$CA_NAME.cer"
+  # DML Fin
+
   if [ "$use_dns_name" = 1 ]; then
     certutil -z <(head -c 1024 /dev/urandom) \
       -S -c "$CA_NAME" -n "$server_addr" \
@@ -1753,6 +1770,10 @@ ikev2setup() {
   else
     restart_ipsec_service
   fi
+  # DML Ini
+  echo "\n> Listado ficheros:"
+  ls -alh $export_dir
+  # DML Fin
   check_ikev2_connection
   print_setup_complete
   print_client_info

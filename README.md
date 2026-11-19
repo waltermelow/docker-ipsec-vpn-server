@@ -80,17 +80,21 @@ Desde WSL o entorno Linux/Bash:
 
 Ejecuta el contenedor de forma aislada (sin acceso a red) montando una carpeta local (por ejemplo `./ikev2-vpn-data`) donde se guardarán los certificados:
 
+*(Variable opcional `-e VPN_ORG_NAME`: define el campo `O` (Organization) de los certificados y perfiles. Si no se especifica, por defecto: `VPN_IKEv2`.*
+*Nombre de la CA: `CA_NAME`=`<VPN_ORG_NAME>_CA`, p.ej. `VPN_IKEv2_CA`, y se guarda en `/etc/ipsec.d/.vpnconfig` para operaciones posteriores).*
+
 ```bash
 docker run --rm --network none \
   -e VPN_DNS_NAME=vpn.tudominio.com \
   -e VPN_CLIENT_NAME=cliente-1 \
+  -e VPN_ORG_NAME=VPN_IKEv2 \
   -v "$(pwd)/ikev2-vpn-data:/etc/ipsec.d" \
   waltermelow/ipsec-vpn--without-server:latest
 ```
 
 Alternativa: proyecto original `hwdsl2/ipsec-vpn-server`:
 ```bash
-# Borrado previo:  mkdir -p "ikev2-vpn-data" && find "ikev2-vpn-data" -mindepth 1 -delete
+# Borrado previo:  mkdir -p "ikev2-vpn-data" && find "$(pwd)/ikev2-vpn-data" -mindepth 1 -delete
 docker run --rm --network none -e VPN_DNS_NAME=midominio.com -e VPN_CLIENT_NAME=micliente -v "$(pwd)/ikev2-vpn-data:/etc/ipsec.d" hwdsl2/ipsec-vpn-server /bin/sh -c 'ipsec initnss && /opt/src/ikev2.sh --auto && cd /etc/ipsec.d && certutil -L -d sql:. -n "IKEv2 VPN CA" -a -o IKEv2_VPN_CA.cer && pk12util -d sql:. -W "" -n "$VPN_DNS_NAME" -o "${VPN_DNS_NAME}.p12" && ls -alh'
 ```
 
@@ -131,7 +135,7 @@ docker run --rm -it --network none \
 ```
 
 Al revocar un cliente, además de actualizar la base de datos interna NSS (`cert9.db`) y eliminar los ficheros del cliente revocado, se genera/actualiza automáticamente el fichero de lista de revocación (CRL) en **formato PEM (Base64)** listo para importar en otros sistemas:
-- `<carpeta_datos>/<CA_NAME>_revocation_list.crl` (p.ej: `./ikev2-vpn-data/IKEv2 VPN CA_revocation_list.crl`)
+- `<carpeta_datos>/<CA_NAME>_revocation_list.crl` (p.ej: `./ikev2-vpn-data/VPN_IKEv2_CA_revocation_list.crl`)
 
 ### 7. Eliminar un cliente existente
 

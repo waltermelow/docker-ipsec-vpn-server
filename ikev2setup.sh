@@ -221,6 +221,29 @@ check_client_name() {
     || case $1 in -*) true ;; *) false ;; esac; }
 }
 
+# DML Ini: Validar y configurar el nombre de organización (O) y CA_NAME sin espacios
+check_org_name() {
+  ! { [ "${#1}" -gt "64" ] || printf '%s' "$1" | LC_ALL=C grep -q '[^A-Za-z0-9._ -]\+' \
+    || case $1 in -*) true ;; *) false ;; esac; }
+}
+
+set_org_and_ca_name() {
+  if [ -n "$VPN_ORG_NAME" ]; then
+    ORG_NAME="$VPN_ORG_NAME"
+    check_org_name "$ORG_NAME" \
+      || exiterr "Invalid organization name in 'VPN_ORG_NAME'. Max 64 chars, allowed: letters, numbers, spaces, '.', '-' and '_'."
+  else
+    saved_org=$(grep -s '^IKEV2_ORG_NAME=.\+' "$CONF_FILE" | tail -n 1 | cut -f2- -d= | sed -e "s/^'//" -e "s/'$//")
+    if [ -n "$saved_org" ]; then
+      ORG_NAME="$saved_org"
+    else
+      ORG_NAME="VPN_IKEv2"
+    fi
+  fi
+  CA_NAME="${ORG_NAME//[[:space:]]/_}_CA"
+}
+# DML Fin
+
 check_cert_exists() {
   certutil -L -d "$CERT_DB" -n "$1" >/dev/null 2>&1
 }
@@ -379,7 +402,7 @@ show_start_setup() {
   op_text=default
   if [ -n "$VPN_DNS_NAME" ] || [ -n "$VPN_CLIENT_NAME" ] \
     || [ -n "$VPN_DNS_SRV1" ] || [ -n "$VPN_PROTECT_CONFIG" ] \
-    || [ -n "$VPN_CLIENT_VALIDITY" ]; then
+    || [ -n "$VPN_CLIENT_VALIDITY" ] || [ -n "$VPN_ORG_NAME" ]; then
     op_text=custom
   fi
   bigecho "Starting IKEv2 setup in auto mode, using $op_text options."
@@ -791,7 +814,7 @@ create_client_cert() {
   sleep 1
   certutil -z <(head -c 1024 /dev/urandom) \
     -S -c "$CA_NAME" -n "$client_name" \
-    -s "O=IKEv2 VPN,CN=$client_name" \
+    -s "O=$ORG_NAME,CN=$client_name" \
     -k rsa -g 3072 -v "$client_validity" \
     -d "$CERT_DB" -t ",," \
     --keyUsage digitalSignature,keyEncipherment \
@@ -1005,7 +1028,7 @@ cat > "$mc_file" <<EOF
       <key>PayloadDisplayName</key>
       <string>VPN</string>
       <key>PayloadOrganization</key>
-      <string>IKEv2 VPN</string>
+      <string>$ORG_NAME</string>
       <key>PayloadIdentifier</key>
       <string>com.apple.vpn.managed.$(uuidgen)</string>
       <key>PayloadType</key>
@@ -1022,7 +1045,7 @@ cat > "$mc_file" <<EOF
         <integer>0</integer>
       </dict>
       <key>UserDefinedName</key>
-      <string>$server_addr</string>
+      <string>$ORG_NAME $server_addr</string>
       <key>VPNType</key>
       <string>IKEv2</string>
     </dict>
@@ -1076,7 +1099,7 @@ $ca_base64
     </dict>
   </array>
   <key>PayloadDisplayName</key>
-  <string>IKEv2 VPN $server_addr</string>
+  <string>$ORG_NAME $server_addr</string>
   <key>PayloadIdentifier</key>
   <string>com.apple.vpn.managed.$(uuidgen)</string>
   <key>PayloadRemovalDisallowed</key>
@@ -1108,11 +1131,11 @@ create_android_profile() {
 cat > "$sswan_file" <<EOF
 {
   "uuid": "$uuid2",
-  "name": "IKEv2 VPN $server_addr",
+  "name": "$ORG_NAME $server_addr",
   "type": "ikev2-cert",
   "remote": {
     "addr": "$server_addr",
-    "id": "CN=$server_addr,O=IKEv2 VPN",
+    "id": "CN=$server_addr,O=$ORG_NAME",
     "cert": "$ca_base64_oneline",
     "certreq": "false",
     "revocation": {
@@ -1154,7 +1177,7 @@ create_ca_server_certs() {
   bigecho2 "Generating CA and server certificates..."
   certutil -z <(head -c 1024 /dev/urandom) \
     -S -x -n "$CA_NAME" \
-    -s "O=IKEv2 VPN,CN=$CA_NAME" \
+    -s "O=$ORG_NAME,CN=$CA_NAME" \
     -k rsa -g 3072 -v 120 \
     -d "$CERT_DB" -t "CT,," -2 >/dev/null 2>&1 <<ANSWERS || exiterr "Failed to create CA certificate."
 y
@@ -1162,14 +1185,22 @@ y
 N
 ANSWERS
   sleep 1
-  # DML Ini: Exporta a fichero CA_xxx.cer
+  # DML Ini: Exporta a fichero CA_xxx.cer y guarda organización en .vpnconfig
   certutil -L -d "$CERT_DB" -n "$CA_NAME" -a -o "$export_dir$CA_NAME.cer"
+  if [ -n "$CONF_FILE" ] && [ -n "$CONF_DIR" ]; then
+    mkdir -p "$CONF_DIR"
+    if grep -qs '^IKEV2_ORG_NAME=.\+' "$CONF_FILE"; then
+      sed -i '/^IKEV2_ORG_NAME=/d' "$CONF_FILE"
+    fi
+    printf '%s\n' "IKEV2_ORG_NAME='$ORG_NAME'" >> "$CONF_FILE"
+    chmod 600 "$CONF_FILE"
+  fi
   # DML Fin
 
   if [ "$use_dns_name" = 1 ]; then
     certutil -z <(head -c 1024 /dev/urandom) \
       -S -c "$CA_NAME" -n "$server_addr" \
-      -s "O=IKEv2 VPN,CN=$server_addr" \
+      -s "O=$ORG_NAME,CN=$server_addr" \
       -k rsa -g 3072 -v 120 \
       -d "$CERT_DB" -t ",," \
       --keyUsage digitalSignature,keyEncipherment \
@@ -1178,7 +1209,7 @@ ANSWERS
   else
     certutil -z <(head -c 1024 /dev/urandom) \
       -S -c "$CA_NAME" -n "$server_addr" \
-      -s "O=IKEv2 VPN,CN=$server_addr" \
+      -s "O=$ORG_NAME,CN=$server_addr" \
       -k rsa -g 3072 -v 120 \
       -d "$CERT_DB" -t ",," \
       --keyUsage digitalSignature,keyEncipherment \
@@ -1542,6 +1573,11 @@ delete_certificates() {
   if grep -qs '^IKEV2_CONFIG_PASSWORD=.\+' "$CONF_FILE"; then
     sed -i '/IKEV2_CONFIG_PASSWORD=/d' "$CONF_FILE"
   fi
+  # DML Ini: Eliminar organización guardada al eliminar la configuración IKEv2
+  if grep -qs '^IKEV2_ORG_NAME=.\+' "$CONF_FILE"; then
+    sed -i '/^IKEV2_ORG_NAME=/d' "$CONF_FILE"
+  fi
+  # DML Fin
 }
 
 print_ikev2_removed() {
@@ -1617,12 +1653,14 @@ ikev2setup() {
     esac
   done
 
-  CA_NAME="IKEv2 VPN CA"
   CERT_DB="sql:/etc/ipsec.d"
   CONF_DIR="/etc/ipsec.d"
   CONF_FILE="/etc/ipsec.d/.vpnconfig"
   IKEV2_CONF="/etc/ipsec.d/ikev2.conf"
   IPSEC_CONF="/etc/ipsec.conf"
+  # DML Ini: Configurar ORG_NAME (por defecto "VPN_IKEv2") y CA_NAME ("<ORG_NAME>_CA")
+  set_org_and_ca_name
+  # DML Fin
 
   check_arguments
   check_config_password

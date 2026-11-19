@@ -764,6 +764,7 @@ if grep -q " /etc/ipsec.d " /proc/mounts && [ -s "$ikev2_sh" ] && [ ! -f "$ikev2
     VPN_DNS_SRV1="$VPN_DNS_SRV1" VPN_DNS_SRV2="$VPN_DNS_SRV2" \
     VPN_PROTECT_CONFIG="$VPN_PROTECT_CONFIG" \
     VPN_CLIENT_VALIDITY="$VPN_CLIENT_VALIDITY" \
+    VPN_ORG_NAME="$VPN_ORG_NAME" \
     VPN_PUBLIC_IP6="$ip6" \
     /bin/bash "$ikev2_sh" --auto >"$ikev2_log" 2>&1; then
     status=1

@@ -1100,6 +1100,8 @@ create_android_profile() {
   [ -z "$server_addr" ] && get_server_address
   p12_base64_oneline=$(base64 -w 52 "$export_dir$client_name.p12" | sed 's/$/\\n/' | tr -d '\n')
   [ -z "$p12_base64_oneline" ] && exiterr "Could not encode .p12 file."
+  ca_base64_oneline=$(certutil -L -d "$CERT_DB" -n "$CA_NAME" -a | grep -v CERTIFICATE | tr -d '\r\n')
+  [ -z "$ca_base64_oneline" ] && exiterr "Could not encode $CA_NAME certificate."
   uuid2=$(uuidgen)
   [ -z "$uuid2" ] && exiterr "Could not generate UUID value."
   sswan_file="$export_dir$client_name.sswan"
@@ -1109,14 +1111,25 @@ cat > "$sswan_file" <<EOF
   "name": "IKEv2 VPN $server_addr",
   "type": "ikev2-cert",
   "remote": {
-    "addr": "$server_addr"
+    "addr": "$server_addr",
+    "id": "CN=$server_addr,O=IKEv2 VPN",
+    "cert": "$ca_base64_oneline",
+    "certreq": "false",
+    "revocation": {
+      "crl": "false",
+      "ocsp": "false",
+      "strict": "false"
+    }
   },
   "local": {
     "p12": "$p12_base64_oneline",
     "rsa-pss": "true"
   },
-  "ike-proposal": "aes256-sha256-modp2048",
-  "esp-proposal": "aes128gcm16"
+  "split-tunneling": {
+    "subnets": ""
+  },
+  "ike-proposal": "aes256-sha256-ecp256",
+  "esp-proposal": "aes256-sha256"
 }
 EOF
   if [ "$export_to_home_dir" = 1 ]; then
@@ -1149,6 +1162,10 @@ y
 N
 ANSWERS
   sleep 1
+  # DML Ini: Exporta a fichero CA_xxx.cer
+  certutil -L -d "$CERT_DB" -n "$CA_NAME" -a -o "$export_dir$CA_NAME.cer"
+  # DML Fin
+
   if [ "$use_dns_name" = 1 ]; then
     certutil -z <(head -c 1024 /dev/urandom) \
       -S -c "$CA_NAME" -n "$server_addr" \
@@ -1168,6 +1185,9 @@ ANSWERS
       --extKeyUsage serverAuth \
       --extSAN "ip:$server_addr,dns:$server_addr" >/dev/null 2>&1 || exiterr "Failed to create server certificate."
   fi
+  # DML Ini: Exporta certificado del servidor a fichero <server_addr>.p12
+  pk12util -d "$CERT_DB" -W "" -n "$server_addr" -o "$export_dir$server_addr.p12" >/dev/null || exiterr "Failed to export server certificate."
+  # DML Fin
 }
 
 create_config_readme() {
@@ -1276,7 +1296,11 @@ check_ikev2_connection() {
 create_crl() {
   bigecho "Revoking client certificate..."
   if ! crlutil -L -d "$CERT_DB" -n "$CA_NAME" >/dev/null 2>&1; then
-    crlutil -G -d "$CERT_DB" -n "$CA_NAME" -c /dev/null >/dev/null
+    # DML Ini: Exporta CRL en formato PEM estándar (X509 CRL) al crearla
+    /bin/rm -f "$export_dir${CA_NAME}_revocation_list.crl"
+    crlutil -G -d "$CERT_DB" -n "$CA_NAME" -c /dev/null -a -o "$export_dir${CA_NAME}_revocation_list.crl" >/dev/null
+    sed -i 's/\r$//;s/^-----BEGIN CRL-----$/-----BEGIN X509 CRL-----/;s/^-----END CRL-----$/-----END X509 CRL-----/' "$export_dir${CA_NAME}_revocation_list.crl"
+    # DML Fin
   fi
   sleep 2
 }
@@ -1286,9 +1310,13 @@ add_client_cert_to_crl() {
   sn_hex=$(printf '%s' "$sn_txt" | sed -e 's/^ *//' -e 's/://g')
   sn_dec=$((16#$sn_hex))
   [ -z "$sn_dec" ] && exiterr "Could not find serial number of client certificate."
-crlutil -M -d "$CERT_DB" -n "$CA_NAME" >/dev/null <<EOF || exiterr "Failed to add client certificate to CRL."
+  # DML Ini: Exporta CRL en formato PEM estándar (X509 CRL) al modificarla
+  /bin/rm -f "$export_dir${CA_NAME}_revocation_list.crl"
+crlutil -M -d "$CERT_DB" -n "$CA_NAME" -a -o "$export_dir${CA_NAME}_revocation_list.crl" >/dev/null <<EOF || exiterr "Failed to add client certificate to CRL."
 addcert $sn_dec $(date -u +%Y%m%d%H%M%SZ)
 EOF
+  sed -i 's/\r$//;s/^-----BEGIN CRL-----$/-----BEGIN X509 CRL-----/;s/^-----END CRL-----$/-----END X509 CRL-----/' "$export_dir${CA_NAME}_revocation_list.crl"
+  # DML Fin
 }
 
 reload_crls() {
@@ -1299,6 +1327,13 @@ delete_client_cert() {
   bigecho "Deleting client certificate..."
   certutil -F -d "$CERT_DB" -n "$client_name"
   certutil -D -d "$CERT_DB" -n "$client_name" 2>/dev/null
+  # DML Ini: Regenera el fichero CRL en formato PEM estándar (X509 CRL) si existe CRL en la BD
+  if crlutil -L -d "$CERT_DB" -n "$CA_NAME" >/dev/null 2>&1; then
+    /bin/rm -f "$export_dir${CA_NAME}_revocation_list.crl"
+    crlutil -M -d "$CERT_DB" -n "$CA_NAME" -c /dev/null -a -o "$export_dir${CA_NAME}_revocation_list.crl" >/dev/null
+    sed -i 's/\r$//;s/^-----BEGIN CRL-----$/-----BEGIN X509 CRL-----/;s/^-----END CRL-----$/-----END X509 CRL-----/' "$export_dir${CA_NAME}_revocation_list.crl"
+  fi
+  # DML Fin
 }
 
 remove_client_config() {
@@ -1349,6 +1384,9 @@ EOF
 print_client_revoked() {
   echo
   echo "Client '$client_name' revoked!"
+  # DML Ini: Mostrar fichero CRL exportado
+  echo "CRL file: $export_dir${CA_NAME}_revocation_list.crl"
+  # DML Fin
 }
 
 print_client_deleted() {
@@ -1432,8 +1470,9 @@ Error: IKEv2 configuration section found in $IPSEC_CONF.
 EOF
     abort_and_exit
   fi
-  if grep -qs "ikev1-policy=drop" "$IPSEC_CONF" \
-    || grep -qs "ikev1-policy=reject" "$IPSEC_CONF"; then
+  # DML Ini: Ignorar líneas comentadas (#ikev1-policy=drop en /etc/ipsec.conf por defecto de Libreswan 5.4)
+  if grep -Eqs '^[[:space:]]*ikev1-policy=(drop|reject)' "$IPSEC_CONF"; then
+  # DML Fin
 cat 1>&2 <<EOF
 Error: IKEv2-only mode is currently enabled on this VPN server.
        You must first disable IKEv2-only mode before removing IKEv2.
@@ -1495,6 +1534,9 @@ delete_certificates() {
     certutil -D -d "$CERT_DB" -n "$line" 2>/dev/null
   done <<< "$cert_list"
   crlutil -D -d "$CERT_DB" -n "$CA_NAME" 2>/dev/null
+  # DML Ini: Eliminar fichero CRL exportado al eliminar la configuración IKEv2
+  /bin/rm -f "$export_dir${CA_NAME}_revocation_list.crl"
+  # DML Fin
   certutil -F -d "$CERT_DB" -n "$CA_NAME"
   certutil -D -d "$CERT_DB" -n "$CA_NAME" 2>/dev/null
   if grep -qs '^IKEV2_CONFIG_PASSWORD=.\+' "$CONF_FILE"; then
@@ -1756,6 +1798,10 @@ ikev2setup() {
   check_ikev2_connection
   print_setup_complete
   print_client_info
+  # DML Ini
+  printf '\n> Listado ficheros:\n'
+  ls -alh "$export_dir"
+  # DML Fin
   if [ "$in_container" = 0 ]; then
     check_swan_update
   fi
